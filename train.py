@@ -1,5 +1,7 @@
 from transformers.optimization import AdamW, get_linear_schedule_with_warmup
 from transformers import GPT2Tokenizer, GPT2LMHeadModel, GPT2Model
+from transformers import BartTokenizer
+from bart_with_lmhead import MyBart
 from torch.optim import Adam
 import torch
 import torch.nn as nn
@@ -21,9 +23,9 @@ from tqdm import tqdm
 class UBARdoc():
     def __init__(self, device):
         self.device = device
-        self.tokenizer = GPT2Tokenizer.from_pretrained(cfg.gpt_path)
-        self.model = GPT2LMHeadModel.from_pretrained(cfg.gpt_path)
+        self.tokenizer = GPT2Tokenizer.from_pretrained(cfg.gpt_path) if cfg.PTM == 'GPT2' else BartTokenizer.from_pretrained(cfg.gpt_path)
         self.reader = Doc2dialReader(self.tokenizer, cfg.data_path, cfg.context_scheme)
+        self.model = GPT2LMHeadModel.from_pretrained(cfg.gpt_path) if cfg.PTM == 'GPT2' else MyBart(cfg.gpt_path, len(self.tokenizer))
         if cfg.mode == 'train':
             self.model.resize_token_embeddings(len(self.tokenizer))
         self.model.to(device)
@@ -32,7 +34,7 @@ class UBARdoc():
     def train(self):
         optimizer, scheduler = self.get_optimizers()
         global_gradient_step = 0
-        data_loader = self.reader.get_data_loader(cfg.mode)
+        data_loader = self.reader.get_data_loader(cfg.mode, cfg.PTM)
         set_stats = self.reader.set_stats[cfg.mode]
         # logging info
         logging.info("***** Running training *****")
@@ -64,7 +66,7 @@ class UBARdoc():
                 try:
                     batch = batch.to(self.device)
                     output = self.model(batch)
-                    loss = self.calculate_loss(output, batch)
+                    loss = self.calculate_loss(output, batch) if cfg.PTM == 'GPT2' else self.calculate_loss(output, batch[:,1])
                     loss.backward()
                     tr_loss += loss.item()
                     torch.nn.utils.clip_grad_norm_(
@@ -99,7 +101,7 @@ class UBARdoc():
             logging.info('Train epoch time: {:.2f} min, epoch loss: {:.4f}'.format(
                         (time.time() - epoch_start_time) / 60, tr_loss/set_stats['num_dials']))
             if (epoch+1) % cfg.model_save_interval == 0:
-                self.save_model(epoch, tr_loss/epoch_step)
+                self.save_model(epoch, tr_loss/(cfg.batch_size*epoch_step))
 
 
     def calculate_loss(self, outputs, labels):
@@ -162,6 +164,7 @@ class UBARdoc():
 
 
 
+
 def parse_arg_cfg(args):
     # add args to cfg
     if args.cfg:
@@ -177,6 +180,9 @@ def parse_arg_cfg(args):
             else:
                 v = dtype(v)
             setattr(cfg, k, v)
+    if cfg.PTM == 'BART':
+        cfg.gpt_path = 'facebook/bart-base'
+    assert cfg.PTM in ['GPT2','BART']
     return
 
 
@@ -191,15 +197,16 @@ def main():
         cfg.mode = args.m
     parse_arg_cfg(args)
 
-    if cfg.mode == 'test' or cfg.mode == 'adjust':
+    if cfg.mode == 'validate' or cfg.mode == 'adjust':
         cfg.gpt_path = cfg.eval_load_path
     else:  # train
         if cfg.exp_path in ['', 'to be generated']:
 
             experiments_path = './experiments'
-            cfg.exp_path = os.path.join(experiments_path, '{}_sd{}_lr{}_bs{}_ga{}'.format(   cfg.exp_no, cfg.seed,
-                                                                                             cfg.lr, cfg.batch_size,
-                                                                                             cfg.gradient_accumulation_steps))
+            cfg.exp_path = os.path.join(experiments_path, '{}_sd{}_lr{}_bs{}_ga{}_ctx{}'.format(    cfg.exp_no, cfg.seed,
+                                                                                                    cfg.lr, cfg.batch_size,
+                                                                                                    cfg.gradient_accumulation_steps,
+                                                                                                    cfg.context_scheme))
             if cfg.save_log:
                 if not os.path.exists(cfg.exp_path):
                     os.mkdir(cfg.exp_path)
@@ -225,6 +232,8 @@ def main():
 
     if cfg.mode == 'train':
         m.train()
+    elif cfg.mode == 'validate':
+        pass
 
 
 

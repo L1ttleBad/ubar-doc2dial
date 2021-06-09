@@ -21,13 +21,14 @@ class PadCollate:
     a batch of sequences
     """
 
-    def __init__(self, dim=0, pad_value=0):
+    def __init__(self, dim=0, pad_value=0, PTM='GPT2'):
         """
         args:
             dim - the dimension to be padded (dimension of time in sequences)
         """
         self.dim = dim
         self.pad_value = pad_value
+        self.PTM = PTM
         # self.max_len = max_len
 
 
@@ -53,5 +54,28 @@ class PadCollate:
         xs = torch.stack(batch, dim=self.dim)
         return xs
 
+    def pad_collate_seq2seq(self, batch):
+        """
+        args:
+            batch - list of [encoder_in, label]
+
+        reutrn:
+            xs - a tensor of all examples in 'batch' after padding
+        """
+        # to tensor
+        batch = list(map(lambda x: [torch.tensor(x[0]), torch.tensor(x[1])], batch))
+        # find longest sequence
+        max_len = max(map(lambda x: max(x[0].shape[self.dim],x[1].shape[self.dim]), batch))
+
+        # pad according to max_len
+        batch = list(map(lambda x:
+                    torch.stack([pad_tensor(x[0], pad=max_len, dim=self.dim, pad_value=self.pad_value),pad_tensor(x[1], pad=max_len, dim=self.dim, pad_value=self.pad_value)], dim=0), batch))
+        # stack all
+        xs = torch.stack(batch, dim=self.dim)
+        return xs
+
     def __call__(self, batch):
-        return self.pad_collate(batch)
+        if self.PTM == 'GPT2':
+            return self.pad_collate(batch)
+        elif self.PTM == 'BART':
+            return self.pad_collate_seq2seq(batch)

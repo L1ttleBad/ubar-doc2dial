@@ -23,9 +23,10 @@ class Doc2dialReader():
         self.tokenizer = tokenizer
         if cfg.mode == 'train':
             self.add_special_token()
-        cfg.pad_id = self.tokenizer.encode('<pad>')[0]
-        cfg.start_of_user_id = self.tokenizer.encode('<sos_u>')[0]
-        cfg.start_of_response_id = self.tokenizer.encode('<sos_r>')[0]
+        cfg.pad_id = self.tokenizer.convert_tokens_to_ids('<pad>')
+        cfg.start_of_user_id = self.tokenizer.convert_tokens_to_ids('<sos_u>')
+        cfg.start_of_response_id = self.tokenizer.convert_tokens_to_ids('<sos_r>')
+        cfg.end_of_response_id = self.tokenizer.convert_tokens_to_ids('<eos_r>')
 
 
         logging.info('Doc2dial reader initialized')
@@ -88,7 +89,7 @@ class Doc2dialReader():
         return ' '.join([token.norm_ if cfg.preprocess_style == 'norm' else token.text for token in self.nlp(sentence)]).strip()
 
 
-    def get_data_loader(self, data_name):
+    def get_data_loader(self, data_name, PTM):
         data_list = self.data[data_name]
         context_component_dict = {'U':'user', 'R':'response','S':'span','P':'paragraph'}
         context_component = [context_component_dict[symbol] for symbol in cfg.context_scheme ]
@@ -106,9 +107,10 @@ class Doc2dialReader():
                     dial_str += '<sos_r> ' + turn['utterance'] + ' <eos_r> '
             encoded_string = self.tokenizer.encode(dial_str[:-1])
             total_len = len(encoded_string)
-            if not total_len > cfg.max_seq_length:
+            if not total_len > cfg.max_seq_length and PTM == 'GPT-2':
                 data.append(encoded_string)
             else:
+                # cut long sequences or preprocess in BART style
                 user_start = []
                 last_response_start = 0
                 while(1):
@@ -119,23 +121,53 @@ class Doc2dialReader():
                     except:
                         break
 
-                added = 0
-                last_added = -1
-                user_start.append(total_len)
-                while added < total_len:
-                    added = max(added - cfg.max_seq_length//3, 0)
-                    if added == last_added: # length surpass limit
-                        break
-                    for idx in user_start[::-1]:
-                        if idx < added + cfg.max_seq_length:
-                            data.append(encoded_string[added: idx])
-                            #logging.info('seq len: {} cut from: {}-{} total len: {}'.format(idx-added, added, idx, total_len))
+                if PTM == 'GPT2':
+                    added = 0
+                    last_added = -1
+                    user_start.append(total_len)
+                    while added < total_len:
+                        added = max(added - cfg.max_seq_length//3, 0)
+                        if added == last_added: # length surpass limit
                             break
-                    last_added = added
-                    added = idx
-            logging.info('dial {} done'.format(len(data)))
+                        for idx in user_start[::-1]:
+                            if idx < added + cfg.max_seq_length:
+                                data.append(encoded_string[added: idx])
+                                #logging.info('seq len: {} cut from: {}-{} total len: {}'.format(idx-added, added, idx, total_len))
+                                break
+                        last_added = added
+                        added = idx
+                elif PTM == 'BART':
+                    added_response_end = 0  # record down index of last added response end token + 1
+                    last_added_start = 0
+                    while(1):
+                        try:
+                            r_start = encoded_string[added_response_end:].index(cfg.start_of_response_id) + added_response_end
+                            r_end = encoded_string[added_response_end:].index(cfg.end_of_response_id) + added_response_end
+                        except:
+                            break
+
+                        if r_end - last_added_start + 1 >= cfg.max_seq_length:
+                            for u_start in user_start:
+                                if  r_end - u_start + 1 < cfg.max_seq_length:
+                                    last_added_start = u_start
+                                    break
+                            try:
+                                user_start = user_start[user_start.index[u_start]:]
+                            except:
+                                logging.info('met sequence that is unable to fit max length, drop')
+                                break
+
+                        encoder_in = encoded_string[last_added_start:r_start]
+                        label = encoded_string[last_added_start: r_end + 1]
+                        data.append([encoder_in, label])
+                        added_response_end = r_end + 1
+
+
+                else:
+                    assert(0,'PTM type data reader no ready yet, check!')
+            # logging.info('dial {} done'.format(len(data)))
         self.set_stats[cfg.mode]['steps_per_epoch'] = math.ceil(len(data)/ cfg.batch_size)
-        return DataLoader(data, batch_size = cfg.batch_size, shuffle = True, collate_fn=PadCollate(pad_value = cfg.pad_id))
+        return DataLoader(data, batch_size = cfg.batch_size, shuffle = True, collate_fn=PadCollate(pad_value = cfg.pad_id, PTM=PTM))
 
     def get_set_stats(self):
         set_stats = {}

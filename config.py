@@ -5,8 +5,9 @@ class _Config:
         self.data_path = './data/'
         self.log_path = './log/'
         self.exp_path = 'to be generated'
-        self.gpt_path = 'distilgpt2'
+        self.gpt_path = 'distilgpt2'  # if PTM is BART, this config will be modified to facebook/bart-base if train/parse_arg_cfg(), if not using facebook/bart-base, change lm layer loading in bart_with_lmhead/__init__()
         self.exp_no = 'test'
+        self.mode = 'train'
 
 
         self.save_log = True
@@ -31,6 +32,8 @@ class _Config:
         # Pick context scheme from ['UR', 'USR', 'USPR']
         self.context_scheme = 'UR'
         self.preprocess_style = 'norm'
+        # Pick pretrain model from ['GPT2', 'BART']
+        self.PTM = 'GPT2'
 
 
     def _init_logging_handler(self, mode):
@@ -42,8 +45,8 @@ class _Config:
         if self.save_log:
 
             file_handler = logging.FileHandler(
-                '{}log_{}_{}_sd{}.json'.format(self.log_path,self.log_time, mode,
-                                                         self.seed))
+                '{}log_{}_{}_ctx{}.json'.format(self.log_path,self.log_time, mode,
+                                                         self.context_scheme))
             logging.basicConfig(handlers=[stderr_handler, file_handler], level=global_config.log_level)
 
             logger = logging.getLogger()
