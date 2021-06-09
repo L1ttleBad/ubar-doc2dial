@@ -107,7 +107,7 @@ class Doc2dialReader():
                     dial_str += '<sos_r> ' + turn['utterance'] + ' <eos_r> '
             encoded_string = self.tokenizer.encode(dial_str[:-1])
             total_len = len(encoded_string)
-            if not total_len > cfg.max_seq_length and PTM == 'GPT-2':
+            if not total_len > cfg.max_seq_length and PTM == 'GPT-2' and data_name == 'train':
                 data.append(encoded_string)
             else:
                 # cut long sequences or preprocess in BART style
@@ -121,7 +121,7 @@ class Doc2dialReader():
                     except:
                         break
 
-                if PTM == 'GPT2':
+                if PTM == 'GPT2' and data_name == 'train':
                     added = 0
                     last_added = -1
                     user_start.append(total_len)
@@ -136,7 +136,7 @@ class Doc2dialReader():
                                 break
                         last_added = added
                         added = idx
-                elif PTM == 'BART':
+                elif PTM == 'BART' or data_name == 'validate':
                     added_response_end = 0  # record down index of last added response end token + 1
                     last_added_start = 0
                     while(1):
@@ -167,7 +167,10 @@ class Doc2dialReader():
                     assert(0,'PTM type data reader no ready yet, check!')
             # logging.info('dial {} done'.format(len(data)))
         self.set_stats[cfg.mode]['steps_per_epoch'] = math.ceil(len(data)/ cfg.batch_size)
-        return DataLoader(data, batch_size = cfg.batch_size, shuffle = True, collate_fn=PadCollate(pad_value = cfg.pad_id, PTM=PTM))
+        if data_name == 'train':
+            return DataLoader(data, batch_size = cfg.batch_size, shuffle = True, collate_fn=PadCollate(pad_value = cfg.pad_id, PTM=PTM))
+        else:
+            return iter(data)
 
     def get_set_stats(self):
         set_stats = {}

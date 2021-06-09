@@ -161,6 +161,34 @@ class UBARdoc():
         # save tokenizer
         self.tokenizer.save_pretrained(save_path)
 
+    def validate(self):
+        data_loader = self.reader.get_data_loader(cfg.mode, cfg.PTM)
+        set_stats = self.reader.set_stats[cfg.mode]
+        # logging info
+        logging.info("***** Running validating *****")
+        logging.info("  Num Turns = %d", set_stats['num_turns'])
+        logging.info("  Num Dialogs = %d", set_stats['num_dials'])
+        logging.info("***** Inferencing *****")
+        pre_result = []
+        label = []
+        with torch.no_grad():
+            self.model.eval()
+            for batch_idx, batch in tqdm(enumerate(data_loader), desc='turns', total=set_stats['num_turns']):
+                input = torch.tensor(batch[0], device=self.device)
+                output = self.model.generate(input_ids=input,
+                                             max_length=input.shape[0],
+                                             temperature=0.7,
+                                             pad_token_id=cfg.pad_id,
+                                             eos_token_id=cfg.end_of_response_id)
+
+                gen_seq = output[0].cpu().numpy().tolist()[input.shape[0]:]
+                pre_result.append(gen_seq)
+                label.append(batch[1][input.shape[0]:])
+
+
+
+
+
 
 
 
@@ -198,6 +226,7 @@ def main():
     parse_arg_cfg(args)
 
     if cfg.mode == 'validate' or cfg.mode == 'adjust':
+        assert(cfg.eval_load_path != 'to be input')
         cfg.gpt_path = cfg.eval_load_path
     else:  # train
         if cfg.exp_path in ['', 'to be generated']:
@@ -233,7 +262,7 @@ def main():
     if cfg.mode == 'train':
         m.train()
     elif cfg.mode == 'validate':
-        pass
+        m.validate()
 
 
 

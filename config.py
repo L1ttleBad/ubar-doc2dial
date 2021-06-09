@@ -5,6 +5,7 @@ class _Config:
         self.data_path = './data/'
         self.log_path = './log/'
         self.exp_path = 'to be generated'
+        self.eval_load_path = 'to be input'
         self.gpt_path = 'distilgpt2'  # if PTM is BART, this config will be modified to facebook/bart-base if train/parse_arg_cfg(), if not using facebook/bart-base, change lm layer loading in bart_with_lmhead/__init__()
         self.exp_no = 'test'
         self.mode = 'train'
@@ -27,6 +28,7 @@ class _Config:
         self.batch_size = 2
         self.seed = 11
         self.device = 0
+        self.max_generate_length = 142 # the same as ori paper code. 128 in train set, 142 in val and test set
 
 
         # Pick context scheme from ['UR', 'USR', 'USPR']
