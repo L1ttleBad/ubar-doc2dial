@@ -176,12 +176,12 @@ class UBARdoc():
             for batch_idx, batch in tqdm(enumerate(data_loader), desc='turns', total=set_stats['num_turns']):
                 input = torch.tensor(batch[0], device=self.device)
                 output = self.model.generate(input_ids=input,
-                                             max_length=input.shape[0],
+                                             max_length=input.shape[0] + cfg.max_generate_length,
                                              temperature=0.7,
                                              pad_token_id=cfg.pad_id,
                                              eos_token_id=cfg.end_of_response_id)
 
-                gen_seq = output[0].cpu().numpy().tolist()[input.shape[0]:]
+                gen_seq = output.cpu().numpy().tolist()[input.shape[0]:]
                 pre_result.append(gen_seq)
                 label.append(batch[1][input.shape[0]:])
 
