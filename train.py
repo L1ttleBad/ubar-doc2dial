@@ -1,3 +1,4 @@
+import datasets
 from transformers.optimization import AdamW, get_linear_schedule_with_warmup
 from transformers import GPT2Tokenizer, GPT2LMHeadModel, GPT2Model
 from transformers import BartTokenizer
@@ -16,6 +17,7 @@ import numpy as np
 from config import global_config as cfg
 from data_reader import Doc2dialReader
 from tqdm import tqdm
+
 
 
 
@@ -162,28 +164,44 @@ class UBARdoc():
         self.tokenizer.save_pretrained(save_path)
 
     def validate(self):
-        data_loader = self.reader.get_data_loader(cfg.mode, cfg.PTM)
-        set_stats = self.reader.set_stats[cfg.mode]
-        # logging info
-        logging.info("***** Running validating *****")
-        logging.info("  Num Turns = %d", set_stats['num_turns'])
-        logging.info("  Num Dialogs = %d", set_stats['num_dials'])
-        logging.info("***** Inferencing *****")
-        pre_result = []
-        label = []
-        with torch.no_grad():
-            self.model.eval()
-            for batch_idx, batch in tqdm(enumerate(data_loader), desc='turns', total=set_stats['num_turns']):
-                input = torch.tensor(batch[0], device=self.device)
-                output = self.model.generate(input_ids=input,
-                                             max_length=input.shape[0] + cfg.max_generate_length,
-                                             temperature=0.7,
-                                             pad_token_id=cfg.pad_id,
-                                             eos_token_id=cfg.end_of_response_id)
+        inference_result_path = os.path.join(cfg.eval_load_path, 'inference_result.json')
+        if not os.path.exists(inference_result_path):
+            data_loader = self.reader.get_data_loader(cfg.mode, cfg.PTM)
+            set_stats = self.reader.set_stats[cfg.mode]
+            # logging info
+            logging.info("***** Running validating *****")
+            logging.info("  Num Turns = %d", set_stats['num_turns'])
+            logging.info("  Num Dialogs = %d", set_stats['num_dials'])
+            logging.info("***** Inferencing *****")
+            pre_result = []
+            label = []
+            with torch.no_grad():
+                self.model.eval()
+                for batch_idx, batch in tqdm(enumerate(data_loader), desc='turns', total=4256):
+                    input = torch.tensor([batch[0]], device=self.device)
+                    output = self.model.generate(input_ids=input,
+                                                 max_length=input.shape[1] + cfg.max_generate_length,
+                                                 temperature=0.7,
+                                                 pad_token_id=cfg.pad_id,
+                                                 eos_token_id=cfg.end_of_response_id)
 
-                gen_seq = output.cpu().numpy().tolist()[input.shape[0]:]
-                pre_result.append(gen_seq)
-                label.append(batch[1][input.shape[0]:])
+                    gen_seq = output[0].cpu().numpy().tolist()[input.shape[1]:]
+                    pre_result.append(gen_seq)
+                    label.append(batch[1][input.shape[1]:])
+
+            pre = list(map(lambda x: self.tokenizer.decode(x[1:-1]), pre_result))
+            ref = list(map(lambda x: [self.tokenizer.decode(x[1:-1])], label))
+            json.dump([pre_result,label],open(inference_result_path ,'w'))
+
+        metric_sacrebleu = datasets.load_metric('sacrebleu')
+        inference_result = json.load(open(inference_result_path ,'r'))
+
+
+        metric_sacrebleu.add_batch(predictions=inference_result[0], references=inference_result[1])
+        score = metric_sacrebleu.compute()['score']
+        logging.info('***** Validate Result *****')
+        logging.info('  bleu: {:.6f} ', score)
+        return score
 
 
 
@@ -263,6 +281,10 @@ def main():
         m.train()
     elif cfg.mode == 'validate':
         m.validate()
+
+    print('done')
+
+    return 0
 
 
 
