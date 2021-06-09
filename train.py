@@ -177,7 +177,7 @@ class UBARdoc():
             label = []
             with torch.no_grad():
                 self.model.eval()
-                for batch_idx, batch in tqdm(enumerate(data_loader), desc='turns', total=4256):
+                for batch_idx, batch in tqdm(enumerate(data_loader), desc='turns', total=set_stats['steps_per_epoch']*cfg.batch_size):
                     input = torch.tensor([batch[0]], device=self.device)
                     output = self.model.generate(input_ids=input,
                                                  max_length=input.shape[1] + cfg.max_generate_length,
@@ -191,7 +191,7 @@ class UBARdoc():
 
             pre = list(map(lambda x: self.tokenizer.decode(x[1:-1]), pre_result))
             ref = list(map(lambda x: [self.tokenizer.decode(x[1:-1])], label))
-            json.dump([pre_result,label],open(inference_result_path ,'w'))
+            json.dump([pre,ref],open(inference_result_path ,'w'))
 
         metric_sacrebleu = datasets.load_metric('sacrebleu')
         inference_result = json.load(open(inference_result_path ,'r'))
