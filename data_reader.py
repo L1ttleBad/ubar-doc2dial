@@ -146,9 +146,9 @@ class Doc2dialReader():
                         except:
                             break
 
-                        if r_end - last_added_start + 1 >= cfg.max_seq_length:
+                        if r_end - last_added_start + 2 >= cfg.max_seq_length:
                             for u_start in user_start:
-                                if  r_end - u_start + 1 < cfg.max_seq_length:
+                                if  r_end - u_start + 2 < cfg.max_seq_length:
                                     last_added_start = u_start
                                     break
                             try:
@@ -158,7 +158,19 @@ class Doc2dialReader():
                                 break
 
                         encoder_in = encoded_string[last_added_start:r_start]
-                        label = encoded_string[last_added_start: r_end + 1]
+                        label = encoded_string[r_start: r_end + 1]
+
+                        if PTM == 'BART':
+                            if encoder_in[0] != 0:
+                                encoder_in = [0] + encoder_in
+                            if encoder_in[-1] != 2:
+                                encoder_in += [2]
+                            if label[0] != 0:
+                                label = [0] + label
+                            if label[-1] != 2:
+                                label += [2]
+                        if cfg.mode == 'train':
+                            label = encoder_in + label
                         data.append([encoder_in, label])
                         added_response_end = r_end + 1
 

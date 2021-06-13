@@ -1,8 +1,8 @@
 import datasets
 from transformers.optimization import AdamW, get_linear_schedule_with_warmup
 from transformers import GPT2Tokenizer, GPT2LMHeadModel, GPT2Model
-from transformers import BartTokenizer
-from bart_with_lmhead import MyBart
+from transformers import BartTokenizer, BartForConditionalGeneration
+#from bart_with_lmhead import MyBart
 from torch.optim import Adam
 import torch
 import torch.nn as nn
@@ -27,9 +27,10 @@ class UBARdoc():
         self.device = device
         self.tokenizer = GPT2Tokenizer.from_pretrained(cfg.gpt_path) if cfg.PTM == 'GPT2' else BartTokenizer.from_pretrained(cfg.gpt_path)
         self.reader = Doc2dialReader(self.tokenizer, cfg.data_path, cfg.context_scheme)
-        self.model = GPT2LMHeadModel.from_pretrained(cfg.gpt_path) if cfg.PTM == 'GPT2' else MyBart(cfg.gpt_path, len(self.tokenizer))
+        self.model = GPT2LMHeadModel.from_pretrained(cfg.gpt_path) if cfg.PTM == 'GPT2' else BartForConditionalGeneration.from_pretrained(cfg.gpt_path)
         if cfg.mode == 'train':
             self.model.resize_token_embeddings(len(self.tokenizer))
+
         self.model.to(device)
 
 
@@ -38,7 +39,7 @@ class UBARdoc():
         global_gradient_step = 0
         data_loader = self.reader.get_data_loader(cfg.mode, cfg.PTM)
         set_stats = self.reader.set_stats[cfg.mode]
-        # logging info
+        #
         logging.info("***** Running training *****")
         logging.info("  Num Training steps(one turn in a batch of dialogs) per epoch = %d",
                      set_stats['steps_per_epoch'])
@@ -66,9 +67,13 @@ class UBARdoc():
                 if batch[0].shape[0]  > cfg.max_seq_length:
                     raise RuntimeError('seq len surpass max seq len. check data preprocession')
                 try:
-                    batch = batch.to(self.device)
-                    output = self.model(batch)
-                    loss = self.calculate_loss(output, batch) if cfg.PTM == 'GPT2' else self.calculate_loss(output, batch[:,1])
+                    if cfg.PTM == 'GPT2':
+                        batch = torch.tensor(batch, device=self.device)
+                    else:
+                        input = batch[:,0].clone().detach().to(cfg.device)
+                        label = batch[:,1].clone().detach().to(cfg.device)
+                    output = self.model(batch) if cfg.PTM == 'GPT2' else self.model(input_ids=input, labels=label)
+                    loss = self.calculate_loss(output, batch) if cfg.PTM == 'GPT2' else output[0]
                     loss.backward()
                     tr_loss += loss.item()
                     torch.nn.utils.clip_grad_norm_(
@@ -126,9 +131,6 @@ class UBARdoc():
         return loss
 
 
-
-
-
     def get_optimizers(self):
         # Setup the optimizer and the learning rate scheduler.
         no_decay = ["bias", "LayerNorm.weight"]
@@ -177,7 +179,8 @@ class UBARdoc():
             label = []
             with torch.no_grad():
                 self.model.eval()
-                for batch_idx, batch in tqdm(enumerate(data_loader), desc='turns', total=set_stats['steps_per_epoch']*cfg.batch_size):
+                #for batch_idx, batch in tqdm(enumerate(data_loader), desc='turns', total=set_stats['steps_per_epoch']*cfg.batch_size):
+                for batch_idx, batch in enumerate(data_loader):
                     input = torch.tensor([batch[0]], device=self.device)
                     output = self.model.generate(input_ids=input,
                                                  max_length=input.shape[1] + cfg.max_generate_length,
@@ -185,12 +188,14 @@ class UBARdoc():
                                                  pad_token_id=cfg.pad_id,
                                                  eos_token_id=cfg.end_of_response_id)
 
-                    gen_seq = output[0].cpu().numpy().tolist()[input.shape[1]:]
+                    gen_seq = output[0].cpu().numpy().tolist()
+                    if cfg.PTM=='GPT2':
+                        gen_seq = gen_seq[input.shape[1]:]
                     pre_result.append(gen_seq)
-                    label.append(batch[1][input.shape[1]:])
+                    label.append(batch[1])
 
-            pre = list(map(lambda x: self.tokenizer.decode(x[1:-1]), pre_result))
-            ref = list(map(lambda x: [self.tokenizer.decode(x[1:-1])], label))
+            pre = list(map(lambda x: self.tokenizer.decode(x[1:-1]), pre_result)) if cfg.PTM=='GPT2' else list(map(lambda x: self.tokenizer.decode(x[3:-1]), pre_result))
+            ref = list(map(lambda x: [self.tokenizer.decode(x[1:-1])], label)) if cfg.PTM=='GPT2' else list(map(lambda x: [self.tokenizer.decode(x[2:-2])], label))
             json.dump([pre,ref],open(inference_result_path ,'w'))
 
         metric_sacrebleu = datasets.load_metric('sacrebleu')
@@ -200,7 +205,7 @@ class UBARdoc():
         metric_sacrebleu.add_batch(predictions=inference_result[0], references=inference_result[1])
         score = metric_sacrebleu.compute()['score']
         logging.info('***** Validate Result *****')
-        logging.info('  bleu: {:.6f} ', score)
+        logging.info('  bleu: {:.6f} '.format(score))
         return score
 
 
@@ -246,6 +251,8 @@ def main():
     if cfg.mode == 'validate' or cfg.mode == 'adjust':
         assert(cfg.eval_load_path != 'to be input')
         cfg.gpt_path = cfg.eval_load_path
+        if cfg.mode == 'adjust':
+            cfg.mode = 'train'
     else:  # train
         if cfg.exp_path in ['', 'to be generated']:
 
@@ -277,7 +284,7 @@ def main():
     #initialize model
     m = UBARdoc(cfg.device)
 
-    if cfg.mode == 'train':
+    if cfg.mode == 'train' :
         m.train()
     elif cfg.mode == 'validate':
         m.validate()
