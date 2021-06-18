@@ -73,7 +73,8 @@ class UBARdoc():
                         input = batch[:,0].clone().detach().to(cfg.device)
                         label = batch[:,1].clone().detach().to(cfg.device)
                     output = self.model(batch) if cfg.PTM == 'GPT2' else self.model(input_ids=input, labels=label)
-                    loss = self.calculate_loss(output, batch) if cfg.PTM == 'GPT2' else output[0]
+                    loss = self.calculate_loss(output, batch) if cfg.PTM == 'GPT2' else self.calculate_BART_loss(output, label)
+                    # loss = self.calculate_loss(output, batch) if cfg.PTM == 'GPT2' else output[0]
                     loss.backward()
                     tr_loss += loss.item()
                     torch.nn.utils.clip_grad_norm_(
@@ -130,6 +131,22 @@ class UBARdoc():
         loss /= num_targets
         return loss
 
+    def calculate_BART_loss(self, outputs, labels):
+        # GPT2-chicahat/train.py
+        lm_logits = outputs[1]
+
+        pad_id = cfg.pad_id
+        loss_fct = nn.CrossEntropyLoss(ignore_index=pad_id, reduction='sum')
+        loss = loss_fct(
+            lm_logits.view(-1, lm_logits.size(-1)), labels.view(-1))
+
+        # avg loss
+        not_ignore = labels.ne(pad_id)
+        num_targets = not_ignore.long().sum().item()
+
+        loss /= num_targets
+        return loss
+
 
     def get_optimizers(self):
         # Setup the optimizer and the learning rate scheduler.
@@ -179,22 +196,24 @@ class UBARdoc():
             label = []
             with torch.no_grad():
                 self.model.eval()
-                #for batch_idx, batch in tqdm(enumerate(data_loader), desc='turns', total=set_stats['steps_per_epoch']*cfg.batch_size):
-                for batch_idx, batch in enumerate(data_loader):
+                for batch_idx, batch in tqdm(enumerate(data_loader), desc='turns', total=set_stats['steps_per_epoch']*cfg.batch_size):
+                # for batch_idx, batch in enumerate(data_loader):#
                     input = torch.tensor([batch[0]], device=self.device)
                     output = self.model.generate(input_ids=input,
                                                  max_length=input.shape[1] + cfg.max_generate_length,
                                                  temperature=0.7,
                                                  pad_token_id=cfg.pad_id,
-                                                 eos_token_id=cfg.end_of_response_id)
+                                                 eos_token_id=cfg.end_of_response_id if cfg.PTM == 'GPT2' else cfg.pad_id)
 
                     gen_seq = output[0].cpu().numpy().tolist()
-                    if cfg.PTM=='GPT2':
-                        gen_seq = gen_seq[input.shape[1]:]
+                    try:
+                        gen_seq = gen_seq[input.shape[1]:] if cfg.PTM == 'GPT2' else gen_seq[-1-gen_seq[::-1].index(cfg.start_of_response_id):-2]
+                    except:
+                        gen_seq = ''
                     pre_result.append(gen_seq)
                     label.append(batch[1])
 
-            pre = list(map(lambda x: self.tokenizer.decode(x[1:-1]), pre_result)) if cfg.PTM=='GPT2' else list(map(lambda x: self.tokenizer.decode(x[3:-1]), pre_result))
+            pre = list(map(lambda x: self.tokenizer.decode(x[1:-1]), pre_result))
             ref = list(map(lambda x: [self.tokenizer.decode(x[1:-1])], label)) if cfg.PTM=='GPT2' else list(map(lambda x: [self.tokenizer.decode(x[2:-2])], label))
             json.dump([pre,ref],open(inference_result_path ,'w'))
 
@@ -208,6 +227,13 @@ class UBARdoc():
         logging.info('  bleu: {:.6f} '.format(score))
         return score
 
+    def to_str(self, sen):
+        # convert a tensor in GPU to a string
+        return self.tokenizer.decode(sen if sen[-1].item == 1 else sen[:np.argwhere(sen.cpu().numpy() == 1)[0,0]])
+
+    def get_last_res(self, sen):
+        # get the last response sentence from index tensor
+        return self.to_str(sen[-sen.tolist()[::-1].index(cfg.start_of_response_id):])
 
 
 
