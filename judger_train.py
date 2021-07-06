@@ -1,8 +1,6 @@
 import datasets
 from transformers.optimization import AdamW, get_linear_schedule_with_warmup
-from transformers import GPT2Tokenizer, GPT2LMHeadModel, GPT2Model
-from transformers import BartTokenizer, BartForConditionalGeneration, AutoModelForSeq2SeqLM
-#from bart_with_lmhead import MyBart
+from transformers import AutoConfig, AutoModelForTokenClassification, AutoTokenizer, AutoModelForCausalLM
 from torch.optim import Adam
 import torch
 import torch.nn as nn
@@ -14,8 +12,8 @@ import logging
 import json
 import math
 import numpy as np
-from config import global_config as cfg
-from data_reader import Doc2dialReader
+from judger_config import global_config as cfg
+from judger_data_reader import Doc2dialJudgerReader
 from tqdm import tqdm
 
 
@@ -25,10 +23,10 @@ from tqdm import tqdm
 class UBARdoc():
     def __init__(self, device):
         self.device = device
-        self.tokenizer = GPT2Tokenizer.from_pretrained(cfg.gpt_path) if cfg.PTM == 'GPT2' else BartTokenizer.from_pretrained(cfg.gpt_path)
-        self.reader = Doc2dialReader(self.tokenizer, cfg.data_path, cfg.context_scheme)
-        self.model = GPT2LMHeadModel.from_pretrained(cfg.gpt_path) if cfg.PTM == 'GPT2' else AutoModelForSeq2SeqLM.from_pretrained(cfg.gpt_path)
-        # self.model = GPT2LMHeadModel.from_pretrained(cfg.gpt_path) if cfg.PTM == 'GPT2' else BartForConditionalGeneration.from_pretrained(cfg.gpt_path)
+        # self.tokenizer = AutoTokenizer.from_pretrained(cfg.gpt_path, unk_token='<unk>', sep_token='<sep>',pad_token='<pad>',cls_token='<cls>')
+        self.tokenizer = AutoTokenizer.from_pretrained(cfg.gpt_path)
+        self.reader = Doc2dialJudgerReader(self.tokenizer, cfg.data_path)
+        self.model = AutoModelForCausalLM.from_pretrained(cfg.gpt_path)
         if cfg.mode == 'train':
             self.model.resize_token_embeddings(len(self.tokenizer))
 
@@ -38,7 +36,7 @@ class UBARdoc():
     def train(self):
         optimizer, scheduler = self.get_optimizers()
         global_gradient_step = 0
-        data_loader = self.reader.get_data_loader(cfg.mode, cfg.PTM)
+        data_loader = self.reader.get_data_loader(cfg.mode)
         set_stats = self.reader.set_stats[cfg.mode]
         #
         logging.info("***** Running training *****")
@@ -68,14 +66,10 @@ class UBARdoc():
                 if batch[0].shape[0]  > cfg.max_seq_length:
                     raise RuntimeError('seq len surpass max seq len. check data preprocession')
                 try:
-                    if cfg.PTM == 'GPT2':
-                        batch = torch.tensor(batch, device=self.device)
-                    else:
-                        input = batch[:,0].clone().detach().to(cfg.device)
-                        label = batch[:,1].clone().detach().to(cfg.device)
-                    output = self.model(batch) if cfg.PTM == 'GPT2' else self.model(input_ids=input, labels=label)
+                    batch = batch.to(self.device)
+                    output = self.model(batch)
                     # loss = self.calculate_loss(output, batch) if cfg.PTM == 'GPT2' else self.calculate_BART_loss(output, label)
-                    loss = self.calculate_loss(output, batch) if cfg.PTM == 'GPT2' else output[0]
+                    loss = self.calculate_loss(output, batch)
                     loss.backward()
                     tr_loss += loss.item()
                     torch.nn.utils.clip_grad_norm_(
@@ -88,11 +82,11 @@ class UBARdoc():
                         optimizer.zero_grad()
                         global_gradient_step += 1
                         if global_gradient_step % cfg.report_interval == 0:
-                            report_loss = (tr_loss - logged_loss)/(cfg.batch_size*min(epoch_step, cfg.gradient_accumulation_steps*cfg.report_interval))
+                            report_loss = (tr_loss - logged_loss)/min(epoch_step, cfg.gradient_accumulation_steps*cfg.report_interval)
                             logged_loss = tr_loss
                             logging.info('')
                             logging.info(
-                                'Global gradient step: {}, epoch step: {}, interval loss: {:.4f}'.format(
+                                'Global gradient step: {}, epoch step: {}, interval loss: {:.8f}'.format(
                                     global_gradient_step, epoch_step, report_loss
                                 ))
 
@@ -107,11 +101,10 @@ class UBARdoc():
 
 
             logging.info('')
-            logging.info('Train epoch time: {:.2f} min, epoch loss: {:.4f}'.format(
+            logging.info('Train epoch time: {:.2f} min, epoch loss: {:.8f}'.format(
                         (time.time() - epoch_start_time) / 60, tr_loss/set_stats['steps_per_epoch']))
             if (epoch+1) % cfg.model_save_interval == 0:
-                self.save_model(epoch, tr_loss/(cfg.batch_size*epoch_step))
-
+                self.save_model(epoch, tr_loss/epoch_step)
 
     def calculate_loss(self, outputs, labels):
         # GPT2-chicahat/train.py
@@ -127,22 +120,6 @@ class UBARdoc():
 
         # avg loss
         not_ignore = shift_labels.ne(pad_id)
-        num_targets = not_ignore.long().sum().item()
-
-        loss /= num_targets
-        return loss
-
-    def calculate_BART_loss(self, outputs, labels):
-        # GPT2-chicahat/train.py
-        lm_logits = outputs[1]
-
-        pad_id = cfg.pad_id
-        loss_fct = nn.CrossEntropyLoss(ignore_index=pad_id, reduction='sum')
-        loss = loss_fct(
-            lm_logits.view(-1, lm_logits.size(-1)), labels.view(-1))
-
-        # avg loss
-        not_ignore = labels.ne(pad_id)
         num_targets = not_ignore.long().sum().item()
 
         loss /= num_targets
@@ -174,7 +151,7 @@ class UBARdoc():
 
     def save_model(self, epoch, loss):
         save_path = os.path.join(
-            cfg.exp_path, 'epoch{}_trloss{:.2f}_gpt2'.format(epoch+1, loss))
+            cfg.exp_path, 'epoch{}_trloss{:.4f}'.format(epoch+1, loss))
         if not os.path.exists(save_path):
             os.mkdir(save_path)
         logging.info('Saving model checkpoint to %s', save_path)
@@ -195,52 +172,66 @@ class UBARdoc():
             logging.info("  Num Dialogs = %d", set_stats['num_dials'])
             logging.info("***** Inferencing *****")
             pre_result = []
-            label = []
+
             with torch.no_grad():
                 self.model.eval()
-                for batch_idx, batch in tqdm(enumerate(data_loader), desc='turns', total=set_stats['steps_per_epoch']*cfg.batch_size):
-                # for batch_idx, batch in enumerate(data_loader):#
-                    input = torch.tensor([batch[0]], device=self.device)
-                    output = self.model.generate(input_ids=input,
-                                                 max_length=input.shape[1] + cfg.max_generate_length,
+
+                count = [0,0,0,0,0]
+                for batch_idx, batch in tqdm(enumerate(data_loader), desc='turns', total=set_stats['steps_per_epoch']):
+
+                    judger_start_idxs = torch.where(batch == cfg.start_of_judger_id)[0]
+                    cut_point = 0
+                    for start_idx in judger_start_idxs:
+                        count[0] += 1
+                        if start_idx - cut_point > 700:
+                            cut_point = start_idx - 700
+                        input = batch[cut_point: start_idx+1].to(cfg.device)
+
+                        output = self.model.generate(input_ids=input,
+                                                 max_length=input.shape[0] + 2,
                                                  temperature=0.7,
-                                                 pad_token_id=cfg.pad_id,
-                                                 eos_token_id=cfg.end_of_response_id if cfg.PTM == 'GPT2' else cfg.pad_id)
+                                                 pad_token_id=cfg.pad_id).cpu()
 
-                    gen_seq = output[0].cpu().numpy().tolist()
-                    try:
-                        gen_seq = gen_seq[input.shape[1]:] if cfg.PTM == 'GPT2' else gen_seq[-1-gen_seq[::-1].index(cfg.start_of_response_id):-2]
-                    except:
-                        gen_seq = ''
-                    pre_result.append(gen_seq)
-                    label.append(batch[1])
+                        if output[-2] != batch[start_idx+1]:
+                            continue
+                        else:
+                            count[1] += 1
+                            title_start_idx = start_idx + torch.where(batch[start_idx:] == cfg.start_of_title_id)[0][0]
+                            input = batch[cut_point: title_start_idx+1].to(cfg.device)
+                            output = self.model.generate(input_ids=input,
+                                                         max_length=input.shape[0] + cfg.max_generate_length,
+                                                         temperature=0.7,
+                                                         pad_token_id=cfg.pad_id,
+                                                         eos_token_id=cfg.end_of_title_id).cpu()
+                            pre_title = output[title_start_idx-cut_point:]
+                            ori_title = batch[title_start_idx:title_start_idx+len(pre_title)]
+                            if pre_title == ori_title:
+                                count[2] += 1
 
-            pre = list(map(lambda x: self.tokenizer.decode(x[1:-1]), pre_result))
-            ref = list(map(lambda x: [self.tokenizer.decode(x[1:-1])], label)) if cfg.PTM=='GPT2' else list(map(lambda x: [self.tokenizer.decode(x[2:-2])], label))
-            json.dump([pre,ref],open(inference_result_path ,'w'))
-
-        metric_sacrebleu = datasets.load_metric('sacrebleu')
-        inference_result = json.load(open(inference_result_path ,'r'))
 
 
-        metric_sacrebleu.add_batch(predictions=inference_result[0], references=inference_result[1])
-        score = metric_sacrebleu.compute()['score']
+        score = count[2]/count[0]
         logging.info('***** Validate Result *****')
-        logging.info('  bleu: {:.6f} '.format(score))
+        logging.info('  match rate: {:.6f} '.format(score))
         return score
 
-    def to_str(self, sen):
-        # convert a tensor in GPU to a string
-        return self.tokenizer.decode(sen if sen[-1].item == 1 else sen[:np.argwhere(sen.cpu().numpy() == 1)[0,0]])
-
-    def get_last_res(self, sen):
-        # get the last response sentence from index tensor
-        return self.to_str(sen[-sen.tolist()[::-1].index(cfg.start_of_response_id):])
 
 
 
 
-
+    def find_same_win(self, a, b):
+        for i in a:
+            for j in b:
+                if i == j:
+                    return i
+        return -1
+    # def to_str(self, sen):
+    #     # convert a tensor in GPU to a string
+    #     return self.tokenizer.decode(sen if sen[-1].item == 1 else sen[:np.argwhere(sen.cpu().numpy() == 1)[0,0]])
+    #
+    # def get_last_res(self, sen):
+    #     # get the last response sentence from index tensor
+    #     return self.to_str(sen[-sen.tolist()[::-1].index(cfg.start_of_response_id):])
 
 
 
@@ -259,9 +250,7 @@ def parse_arg_cfg(args):
             else:
                 v = dtype(v)
             setattr(cfg, k, v)
-    if cfg.PTM == 'BART':
-        cfg.gpt_path = 'facebook/bart-base'
-    assert cfg.PTM in ['GPT2','BART']
+    cfg.stride_size = math.floor(cfg.max_seq_length * cfg.stride_rate)
     return
 
 
@@ -284,11 +273,10 @@ def main():
     else:  # train
         if cfg.exp_path in ['', 'to be generated']:
 
-            experiments_path = './experiments'
-            cfg.exp_path = os.path.join(experiments_path, '{}_sd{}_lr{}_bs{}_ga{}_ctx{}'.format(    cfg.exp_no, cfg.seed,
-                                                                                                    cfg.lr, cfg.batch_size,
-                                                                                                    cfg.gradient_accumulation_steps,
-                                                                                                    cfg.context_scheme))
+            experiments_path = './judger_experiments'
+            cfg.exp_path = os.path.join(experiments_path, '{}_sd{}_bs{}_ga{}'.format(    cfg.exp_no, cfg.seed,
+                                                                                                    cfg.batch_size,
+                                                                                                    cfg.gradient_accumulation_steps))
             if cfg.save_log:
                 if not os.path.exists(cfg.exp_path):
                     os.mkdir(cfg.exp_path)
@@ -301,7 +289,7 @@ def main():
 
 
 
-    cfg._init_logging_handler(args.m)
+    cfg._init_logging_handler(cfg.mode)
 
     #fix random seed
     torch.manual_seed(cfg.seed)
@@ -315,6 +303,7 @@ def main():
     if cfg.mode == 'train' :
         m.train()
     elif cfg.mode == 'validate':
+        cfg.batch_size = 1
         m.validate()
 
     print('done')

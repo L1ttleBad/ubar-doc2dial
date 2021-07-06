@@ -74,8 +74,31 @@ class PadCollate:
         xs = torch.stack(batch, dim=self.dim)
         return xs
 
+    def pad_collate_xlnet(self, batch):
+        """
+        args:
+            batch - list of [encoder_in, label]
+
+        reutrn:
+            xs - a tensor of all examples in 'batch' after padding
+        """
+        # to tensor
+        inputs = list(map(lambda x: torch.tensor(x[0]), batch))
+        # find longest sequence
+        max_len = max(map(lambda x: x.shape[self.dim], inputs))
+
+        # pad according to max_len
+        inputs = list(map(lambda x:
+                    pad_tensor(x, pad=max_len, dim=self.dim, pad_value=self.pad_value), inputs))
+        # stack all
+        xs = [torch.stack(inputs, dim=self.dim), torch.stack([x[1] for x in batch], dim=self.dim) if self.PTM == 'xlnet' else torch.tensor([x[1] for x in batch], dtype=torch.float) ]
+        return xs
+
     def __call__(self, batch):
-        if self.PTM == 'GPT2':
+        if self.PTM == 'GPT2' :
             return self.pad_collate(batch)
-        elif self.PTM == 'BART':
+        elif self.PTM == 'BART' :
             return self.pad_collate_seq2seq(batch)
+        elif self.PTM == 'xlnet' or self.PTM == 'bert' : # bert is for compress usage, training bert model will not use this
+            return self.pad_collate_xlnet(batch)
+

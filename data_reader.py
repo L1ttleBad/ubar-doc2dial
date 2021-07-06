@@ -199,6 +199,3 @@ class Doc2dialReader():
             set_stats[set] = stat_dict
         return set_stats
 
-
-
-
